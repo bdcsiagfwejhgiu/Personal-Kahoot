@@ -112,6 +112,7 @@ class KahootConnector:
             proc = subprocess.Popen(
                 cmd,
                 cwd=os.path.dirname(node_script),
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

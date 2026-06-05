@@ -75,10 +75,100 @@ try {
 
     const client = new Kahoot();
     let currentGameInfo = null;
+    let currentQuestion = null;
 
     client.on('error', err => {
         error('Client error: ' + (err && err.stack ? err.stack : err));
         process.exit(1);
+    });
+
+    function getChoiceText(choice) {
+        if (choice == null) return null;
+        if (typeof choice === 'string' || typeof choice === 'number') return String(choice);
+        if (choice.answer) return String(choice.answer);
+        if (choice.choice) return String(choice.choice);
+        if (choice.title) return String(choice.title);
+        if (choice.text) return String(choice.text);
+        return null;
+    }
+
+    function getQuestionChoices(question) {
+        if (!question || typeof question !== 'object') return [];
+        if (Array.isArray(question.choices)) return question.choices;
+        if (question.quizQuestion && Array.isArray(question.quizQuestion.choices)) return question.quizQuestion.choices;
+        if (question.question && Array.isArray(question.question.choices)) return question.question.choices;
+        return [];
+    }
+
+    function parseAnswerCommand(input) {
+        const text = input.trim();
+        const numeric = /^ANSWER:\s*(\d+)$/i.exec(text);
+        if (numeric) {
+            return Number(numeric[1]);
+        }
+        const textOnly = /^ANSWER:\s*(.+)$/i.exec(text);
+        if (textOnly) {
+            return textOnly[1].trim();
+        }
+        return null;
+    }
+
+    async function submitAnswer(rawCommand) {
+        if (!currentQuestion) {
+            warn('No active question to answer.');
+            return;
+        }
+
+        const choices = getQuestionChoices(currentQuestion);
+        if (!choices.length) {
+            warn('Current question has no choices available.');
+            return;
+        }
+
+        let value = parseAnswerCommand(rawCommand);
+        if (value == null) {
+            warn('Invalid ANSWER command. Use ANSWER: <number> or ANSWER: <exact answer text>');
+            return;
+        }
+
+        let answerIndex = null;
+        if (typeof value === 'number') {
+            if (value > 0 && value <= choices.length) {
+                answerIndex = value - 1;
+            } else if (value >= 0 && value < choices.length) {
+                answerIndex = value;
+            }
+        } else if (typeof value === 'string') {
+            const normalized = value.toLowerCase();
+            for (let i = 0; i < choices.length; i++) {
+                const text = getChoiceText(choices[i]);
+                if (text && text.toLowerCase() === normalized) {
+                    answerIndex = i;
+                    break;
+                }
+            }
+        }
+
+        if (answerIndex == null) {
+            warn('Could not map ANSWER command to a valid choice index.');
+            return;
+        }
+
+        try {
+            await client.answer(answerIndex);
+            success(`Submitted answer ${answerIndex + 1}`);
+        } catch (err) {
+            error(`Failed to submit answer: ${err}`);
+        }
+    }
+
+    process.stdin.resume();
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', async raw => {
+        for (const line of raw.split(/\r?\n/)) {
+            if (!line.trim()) continue;
+            await submitAnswer(line);
+        }
     });
 
     if (!name) {
@@ -331,6 +421,7 @@ try {
         describeQuestion(q).forEach(line => console.log(line));
     };
     const logQuestionStart = q => {
+        currentQuestion = q;
         event('Question started');
         describeQuestion(q).forEach(line => console.log(line));
     };
