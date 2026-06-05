@@ -1,3 +1,4 @@
+import os
 import sys
 from kahoot_connector import KahootConnector
 
@@ -37,6 +38,10 @@ def error(text):
     print(f"{Colors.RED}[ERROR]{Colors.RESET} {text}")
 
 
+def clear_terminal():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+
 def main():
     print(f"{Colors.BOLD}{Colors.CYAN}Kahoot quick join{Colors.RESET}")
     pin = input("Enter game PIN: ").strip()
@@ -73,12 +78,17 @@ def main():
     success("Joiner started. Output will stream below; press Ctrl+C to exit.")
 
     try:
+        cleared = False
         for line in proc.stdout:
             if isinstance(line, bytes):
                 line = line.decode(errors='ignore')
             line = line.rstrip()
             if not line:
                 continue
+            if not cleared and ('Joined successfully' in line or '[OK] Joined successfully' in line):
+                clear_terminal()
+                cleared = True
+                info('Connected. Terminal cleared. Waiting for questions...')
             if line.startswith('Loaded '):
                 print(f"{Colors.GREEN}{line}{Colors.RESET}")
             elif line.startswith('[OK]') or 'Joined successfully' in line:

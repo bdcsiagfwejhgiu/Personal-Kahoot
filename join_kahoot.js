@@ -74,6 +74,8 @@ try {
     }
 
     const client = new Kahoot();
+    let currentGameInfo = null;
+
     client.on('error', err => {
         error('Client error: ' + (err && err.stack ? err.stack : err));
         process.exit(1);
@@ -154,19 +156,17 @@ try {
 
     function getText(value) {
         if (value == null) return null;
-        if (typeof value === 'string') return value;
-        if (typeof value === 'number') return String(value);
-        if (typeof value === 'object') {
-            if (value.text) return getText(value.text);
-            if (value.question) return getText(value.question);
-            if (value.prompt) return getText(value.prompt);
-            if (value.title) return getText(value.title);
-            if (value.description) return getText(value.description);
-            if (value.content) return getText(value.content);
-            if (value.answer) return getText(value.answer);
-            if (value.choice) return getText(value.choice);
-            return findStringField(value);
+        if (typeof value === 'string' || typeof value === 'number') return String(value);
+        if (typeof value !== 'object') return null;
+
+        const keys = ['text', 'question', 'prompt', 'title', 'description', 'content', 'answer', 'choice', 'label', 'questionText', 'titlePlain', 'message'];
+        for (const key of keys) {
+            if (key in value) {
+                const text = getText(value[key]);
+                if (text) return text;
+            }
         }
+
         return null;
     }
 
@@ -214,6 +214,26 @@ try {
         return null;
     }
 
+    function gatherGameBlocks(block, blocks = []) {
+        if (!block || typeof block !== 'object') return blocks;
+        blocks.push(block);
+        if (block.nextGameBlockData && typeof block.nextGameBlockData === 'object') {
+            return gatherGameBlocks(block.nextGameBlockData, blocks);
+        }
+        return blocks;
+    }
+
+    function getQuestionBlock(index) {
+        if (!currentGameInfo) return null;
+        const container = currentGameInfo.firstGameBlockData || currentGameInfo.quizQuestion || currentGameInfo.question || currentGameInfo;
+        const blocks = gatherGameBlocks(container, []);
+        if (!blocks.length) return null;
+        if (typeof index === 'number' && index > 0 && index <= blocks.length) {
+            return blocks[index - 1];
+        }
+        return blocks[0];
+    }
+
     function collectAnswers(q) {
         const answers = [];
         const candidates = [];
@@ -225,10 +245,19 @@ try {
         if (payload.nextGameBlockData && Array.isArray(payload.nextGameBlockData.choices)) candidates.push(...payload.nextGameBlockData.choices);
         if (payload.question && Array.isArray(payload.question.choices)) candidates.push(...payload.question.choices);
         if (payload.firstGameBlockData && Array.isArray(payload.firstGameBlockData.choices)) candidates.push(...payload.firstGameBlockData.choices);
+        if (payload.quizQuestion && Array.isArray(payload.quizQuestion.choices)) candidates.push(...payload.quizQuestion.choices);
 
         candidates.forEach((choice, index) => {
-            const text = getText(choice) || getText(choice.answer) || getText(choice.choice) || getText(choice.title) || getText(choice.label) || `Option ${index + 1}`;
-            answers.push(text);
+            let text = null;
+            if (typeof choice === 'string' || typeof choice === 'number') {
+                text = String(choice);
+            } else if (choice && typeof choice === 'object') {
+                text = getText(choice) || getText(choice.answer) || getText(choice.choice) || getText(choice.title) || getText(choice.label) || getText(choice.content) || getText(choice.prompt);
+                if (!text && Array.isArray(choice.answer)) {
+                    text = choice.answer.map(getText).filter(Boolean).join(' / ');
+                }
+            }
+            answers.push(text || `Option ${index + 1}`);
         });
 
         return answers;
@@ -242,29 +271,49 @@ try {
         const lines = [];
         const questionData = normalizeQuestionPayload(q);
         const index = getQuestionIndex(q);
-        const questionText = getText(questionData) || getText(questionData.question) || getText(questionData.prompt) || getText(questionData.title) || getText(questionData.description) || getText(questionData.content) || getText(questionData.quizQuestion) || getText(questionData.text);
+        let questionText = getText(questionData) || getText(questionData.question) || getText(questionData.prompt) || getText(questionData.title) || getText(questionData.description) || getText(questionData.content) || getText(questionData.quizQuestion) || getText(questionData.text);
         const questionType = questionData.type || q.type || q.questionType || 'unknown';
-        const answers = collectAnswers(questionData);
-        const imageUrls = getImageUrls(questionData);
-        const choiceCount = typeof questionData.numberOfChoices === 'number' ? questionData.numberOfChoices : answers.length;
+        let answers = collectAnswers(questionData);
+        let imageUrls = getImageUrls(questionData);
 
-        lines.push(`Question ${index || '?'}: ${questionText || questionType}`);
-        if (questionType) {
-            lines.push(`Type: ${questionType}`);
+        if ((!questionText || !answers.length) && currentGameInfo) {
+            const fallback = getQuestionBlock(index);
+            if (fallback && fallback !== questionData) {
+                const fallbackData = normalizeQuestionPayload(fallback);
+                if (!questionText) {
+                    questionText = getText(fallbackData) || getText(fallbackData.question) || getText(fallbackData.prompt) || getText(fallbackData.title) || getText(fallbackData.description) || getText(fallbackData.content) || getText(fallbackData.quizQuestion) || getText(fallbackData.text);
+                }
+                if (!answers.length) {
+                    answers = collectAnswers(fallbackData);
+                }
+                if (!imageUrls.length) {
+                    imageUrls = getImageUrls(fallbackData);
+                }
+            }
         }
-        if (choiceCount >= 0) {
-            lines.push(`Choices: ${choiceCount}`);
+
+        const choiceCount = typeof questionData.numberOfChoices === 'number' ? questionData.numberOfChoices : answers.length;
+        const titleLine = `- Question ${index || '?'} (${choiceCount} choice${choiceCount === 1 ? '' : 's'}):`;
+        lines.push(titleLine);
+        if (questionText) {
+            lines.push(`    - "${questionText}"`);
+        } else if (questionType) {
+            lines.push(`    - Type: ${questionType}`);
         }
+
         if (answers.length) {
-            lines.push('Answers:');
-            answers.forEach((answer, idx) => lines.push(` - ${idx + 1}. ${answer}`));
+            answers.forEach(answer => {
+                if (answer) lines.push(`          - "${answer}"`);
+            });
         }
+
         if (imageUrls.length) {
-            lines.push('Images:');
-            imageUrls.forEach(url => lines.push(` - ${url}`));
+            lines.push('    - Images:');
+            imageUrls.forEach(url => lines.push(`          - "${url}"`));
         }
+
         if (!answers.length && !imageUrls.length && !questionText) {
-            lines.push(`Payload: ${JSON.stringify(questionData)}`);
+            lines.push('    - [No readable question text or answers available]');
         }
 
         return lines;
@@ -274,16 +323,16 @@ try {
     const logGameStart = data => {
         event('Game started');
         if (data && typeof data === 'object') {
-            event(`Game info: ${formatJoinInfo(data)}`);
+            currentGameInfo = data;
         }
     };
     const logQuestionReady = q => {
         event('Question ready');
-        describeQuestion(q).forEach(line => console.log(style('[DETAIL]', colors.cyan), line));
+        describeQuestion(q).forEach(line => console.log(line));
     };
     const logQuestionStart = q => {
         event('Question started');
-        describeQuestion(q).forEach(line => console.log(style('[DETAIL]', colors.cyan), line));
+        describeQuestion(q).forEach(line => console.log(line));
     };
     const logDisconnect = reason => {
         warn(`Disconnect: ${reason}`);
